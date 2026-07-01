@@ -21,9 +21,9 @@ The implemented model variants are:
 The experiments were run with:
 
 - Python 3.12
-- PyTorch `2.11.0+cpu`
+- PyTorch `2.7.0+cu128`
 - PyTorch Geometric `2.6.1`/`2.7.0`
-- CPU device
+- NVIDIA GPU/CUDA device when available
 
 Create and activate a virtual environment, then install dependencies:
 
@@ -32,6 +32,17 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+
+The pinned requirements use PyTorch CUDA 12.8 wheels. To verify that PyTorch
+can see the GPU after installation:
+
+```powershell
+python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU only')"
+```
+
+If you need a CPU-only environment instead, replace the CUDA PyTorch install
+with the CPU wheel from the official PyTorch selector, then install the
+remaining requirements.
 
 On macOS/Linux:
 

@@ -24,6 +24,10 @@ DROPOUT = 0.2
 REGULARIZATION = 1e-2
 
 
+def checkpoint_safe_name(value):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_")
+
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -516,6 +520,46 @@ class NsornGatReasoner(torch.nn.Module):
         else:
             self.decoder = DistMultDecoder(num_relations, self.encoder.output_dim)
         self.optimizer = torch.optim.Adam(self.parameters(), lr=LEARNING_RATE)
+
+    def save_checkpoint(
+        self,
+        path,
+        best_val_loss=None,
+        seed=None,
+        epochs=None,
+        node2id=None,
+        rel2id=None,
+        dataset=None,
+        evaluation_datasets=None,
+    ):
+        checkpoint = {
+            "protocol": "nsorn",
+            "variant": self.variant,
+            "num_nodes": self.encoder.standard_encoder.node_emb.size(0)
+            if isinstance(self.encoder, FilteredTwoHopGatEncoder)
+            else self.encoder.node_emb.size(0),
+            "num_relations": self.decoder.rel_emb.size(0),
+            "rdf_type_id": self.rdf_type_id,
+            "subclass_id": self.subclass_id,
+            "link_relation_ids": sorted(self.link_relation_ids),
+            "rule_aux_weight": self.rule_aux_weight,
+            "hidden_channels": HIDDEN_CHANNELS,
+            "learning_rate": LEARNING_RATE,
+            "dropout": DROPOUT,
+            "regularization": REGULARIZATION,
+            "seed": seed,
+            "epochs": epochs,
+            "best_val_loss": best_val_loss,
+            "node2id": {str(node): idx for node, idx in (node2id or {}).items()},
+            "rel2id": {str(rel): idx for rel, idx in (rel2id or {}).items()},
+            "dataset": dict(dataset or {}),
+            "evaluation_datasets": [
+                dict(evaluation_dataset)
+                for evaluation_dataset in (evaluation_datasets or [])
+            ],
+            "model_state_dict": self.state_dict(),
+        }
+        torch.save(checkpoint, path)
 
     def encode(self, data):
         if isinstance(self.encoder, FilteredTwoHopGatEncoder):
@@ -1081,6 +1125,7 @@ def train_variant(
     device,
     seed,
     epochs,
+    models_dir,
     rule_aux_weight=0.0,
 ):
     dataset_name, _ = dataset_names(dataset)
@@ -1120,6 +1165,27 @@ def train_variant(
     if best_state is not None:
         model.load_state_dict(best_state)
         print(f"{variant} seed {seed} using best val_loss: {best_val_loss:.4f}")
+
+    checkpoint_name = "_".join(
+        [
+            checkpoint_safe_name(dataset["model_file"]),
+            "nsorn",
+            checkpoint_safe_name(variant),
+            f"seed{seed}",
+        ]
+    )
+    checkpoint_path = Path(models_dir) / checkpoint_name
+    model.save_checkpoint(
+        checkpoint_path,
+        best_val_loss=best_val_loss,
+        seed=seed,
+        epochs=epochs,
+        node2id=node2id,
+        rel2id=rel2id,
+        dataset=dataset,
+        evaluation_datasets=evaluation_datasets,
+    )
+    print(f"Saved nsorn checkpoint to {checkpoint_path}")
 
     return model, data, node2id, rel2id, test_edges_by_file
 
@@ -1207,11 +1273,14 @@ def run_nsorn_protocol(
     device,
     datasets,
     results_dir,
+    models_dir,
     epochs=300,
     runs=5,
     rule_aux_weight=0.0,
 ):
     variants = ("GAT", "2-Hop GAT", "Filtered 2-Hop GAT")
+    models_dir = Path(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
     dataset_groups = {}
     for dataset in datasets:
         dataset_groups.setdefault(training_key(dataset), []).append(dataset)
@@ -1258,6 +1327,7 @@ def run_nsorn_protocol(
                     device,
                     seed,
                     epochs,
+                    models_dir,
                     rule_aux_weight,
                 )
                 for dataset in group_datasets:

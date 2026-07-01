@@ -486,6 +486,7 @@ def main():
             device,
             datasets,
             args.results_dir,
+            models_dir,
             epochs=args.nsorn_epochs,
             runs=args.nsorn_runs,
             rule_aux_weight=args.nsorn_rule_aux_weight,
