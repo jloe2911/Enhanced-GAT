@@ -359,12 +359,10 @@ def mse_loss(pred, target):
 
 
 def shuffle_predictions_targets(edge_index, targets, device):
-    shuffle = list(zip(edge_index[0], edge_index[1], targets))
-    random.shuffle(shuffle)
-    u, v, targets = zip(*shuffle)
-    return torch.tensor([list(u), list(v)]).to(device), torch.tensor(list(targets)).to(
-        device
-    )
+    edge_index = edge_index.to(device)
+    targets = targets.to(device)
+    perm = torch.randperm(edge_index.size(1), device=device)
+    return edge_index[:, perm], targets[perm]
 
 
 def eval_ranking_metrics(tail_pred, g_test, pos_edge_index, output, max_num, device):

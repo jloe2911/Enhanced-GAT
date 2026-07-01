@@ -346,28 +346,54 @@ class TwoHopGatEncoder(GatEncoder):
     def __init__(self, num_nodes, hidden_channels):
         super().__init__(num_nodes, hidden_channels)
         self.two_hop_relation_ids = None
+        self._two_hop_cache = {}
 
     def reset_parameters(self):
         super().reset_parameters()
 
     def forward(self, edge_index, edge_type=None):
         two_hop_base_edges = edge_index
-        if self.two_hop_relation_ids is not None and edge_type is not None:
-            relation_ids = torch.tensor(
-                sorted(self.two_hop_relation_ids),
-                dtype=edge_type.dtype,
-                device=edge_type.device,
-            )
-            two_hop_base_edges = edge_index[:, torch.isin(edge_type, relation_ids)]
-        edge_index_2hop = two_hop_edges(
-            two_hop_base_edges,
-            self.node_emb.size(0),
-            edge_index.device,
+        cache_key = (
+            "all",
+            int(edge_index.data_ptr()),
+            int(edge_index.size(1)),
+            str(edge_index.device),
         )
+        if self.two_hop_relation_ids is not None and edge_type is not None:
+            relation_key = tuple(sorted(self.two_hop_relation_ids))
+            cache_key = (
+                "relations",
+                relation_key,
+                int(edge_index.data_ptr()),
+                int(edge_index.size(1)),
+                str(edge_index.device),
+            )
+            if cache_key not in self._two_hop_cache:
+                relation_ids = torch.tensor(
+                    relation_key,
+                    dtype=edge_type.dtype,
+                    device=edge_type.device,
+                )
+                two_hop_base_edges = edge_index[:, torch.isin(edge_type, relation_ids)]
+                self._two_hop_cache[cache_key] = two_hop_edges(
+                    two_hop_base_edges,
+                    self.node_emb.size(0),
+                    edge_index.device,
+                )
+        if cache_key not in self._two_hop_cache:
+            self._two_hop_cache[cache_key] = two_hop_edges(
+                two_hop_base_edges,
+                self.node_emb.size(0),
+                edge_index.device,
+            )
+        edge_index_2hop = self._two_hop_cache[cache_key]
         return self.forward_with_2hop(edge_index, edge_index_2hop)
 
     def set_two_hop_relations(self, relation_ids):
-        self.two_hop_relation_ids = set(relation_ids)
+        relation_ids = set(relation_ids)
+        if relation_ids != self.two_hop_relation_ids:
+            self._two_hop_cache.clear()
+        self.two_hop_relation_ids = relation_ids
 
     def forward_with_2hop(self, edge_index, edge_index_2hop):
         x = (
@@ -391,10 +417,21 @@ class FilteredTwoHopGatEncoder(TwoHopGatEncoder):
         self.standard_encoder = GatEncoder(num_nodes, hidden_channels)
         self.subclass_encoder = TwoHopGatEncoder(num_nodes, hidden_channels)
         self.assertion_encoder = TwoHopGatEncoder(num_nodes, hidden_channels)
+        self._filter_cache = {}
 
-    def forward(self, edge_index, edge_type=None):
-        if edge_type is None:
-            return self.standard_encoder(edge_index, edge_type)
+    def _filter_cache_key(self, edge_index):
+        return (
+            int(edge_index.data_ptr()),
+            int(edge_index.size(1)),
+            str(edge_index.device),
+            self.rdf_type_id,
+            self.subclass_id,
+        )
+
+    def _filter_edges(self, edge_index):
+        cache_key = self._filter_cache_key(edge_index)
+        if cache_key in self._filter_cache:
+            return self._filter_cache[cache_key]
 
         subclass_edges = relation_edge_index(self.data, self.subclass_id).to(
             edge_index.device
@@ -414,6 +451,24 @@ class FilteredTwoHopGatEncoder(TwoHopGatEncoder):
             num_nodes,
             edge_index.device,
         )
+        self._filter_cache[cache_key] = (
+            subclass_edges,
+            assertion_edges,
+            subclass_2hop,
+            assertion_subclass_2hop,
+        )
+        return self._filter_cache[cache_key]
+
+    def forward(self, edge_index, edge_type=None):
+        if edge_type is None:
+            return self.standard_encoder(edge_index, edge_type)
+
+        (
+            subclass_edges,
+            assertion_edges,
+            subclass_2hop,
+            assertion_subclass_2hop,
+        ) = self._filter_edges(edge_index)
         standard_view = self.standard_encoder(edge_index, edge_type)
         subclass_view = self.subclass_encoder.forward_with_2hop(
             subclass_edges, subclass_2hop
@@ -424,6 +479,12 @@ class FilteredTwoHopGatEncoder(TwoHopGatEncoder):
         return torch.cat([standard_view, subclass_view, assertion_view], dim=1)
 
     def set_filters(self, data, rdf_type_id, subclass_id):
+        if (
+            getattr(self, "data", None) is not data
+            or getattr(self, "rdf_type_id", None) != rdf_type_id
+            or getattr(self, "subclass_id", None) != subclass_id
+        ):
+            self._filter_cache.clear()
         self.data = data
         self.rdf_type_id = rdf_type_id
         self.subclass_id = subclass_id
