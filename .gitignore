@@ -206,7 +206,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-datasets
-models
+datasets/
+models/
 Models/
 results/
